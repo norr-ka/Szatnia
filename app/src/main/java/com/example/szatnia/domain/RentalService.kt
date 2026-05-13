@@ -10,18 +10,20 @@ class RentalService(
 ) {
     fun borrowCostume(
         operationDate: LocalDate,
-        costumeNumber: String,
+        costumeId: String,
         registryNumber: String,
         deposit: Double?,
     ): Result<Unit> {
         val snapshot = repository.snapshot()
-        val costume = snapshot.costumes.firstOrNull { it.costumeNumber == costumeNumber }
-            ?: return Result.failure(IllegalArgumentException("Nie znaleziono stroju $costumeNumber"))
+        val costume = snapshot.costumes.firstOrNull { it.costumeId == costumeId }
+            ?: return Result.failure(IllegalArgumentException("Nie znaleziono stroju"))
         val member = snapshot.choirMembers.firstOrNull { it.registryNumber == registryNumber }
             ?: return Result.failure(IllegalArgumentException("Nie znaleziono chórzysty $registryNumber"))
 
         if (costume.availability == CostumeAvailability.BORROWED) {
-            return Result.failure(IllegalStateException("Strój $costumeNumber jest już wypożyczony"))
+            return Result.failure(
+                IllegalStateException("Strój ${costume.costumeNumber} jest już wypożyczony")
+            )
         }
         if (costume.category.requiresDeposit && deposit == null) {
             return Result.failure(IllegalArgumentException("Kaucja jest wymagana dla teczek koncertowych"))
@@ -36,9 +38,10 @@ class RentalService(
         )
         repository.appendHistoryEntry(
             RentalHistoryEntry(
-                operationId = buildOperationId(costume.costumeNumber, member.registryNumber),
+                operationId = buildOperationId(costume.costumeId, member.registryNumber),
                 borrowedAt = operationDate,
                 category = costume.category,
+                costumeId = costume.costumeId,
                 costumeNumber = costume.costumeNumber,
                 registryNumber = member.registryNumber,
                 fullName = member.fullName,
@@ -48,19 +51,21 @@ class RentalService(
         return Result.success(Unit)
     }
 
-    fun returnCostume(operationDate: LocalDate, costumeNumber: String): Result<Unit> {
+    fun returnCostume(operationDate: LocalDate, costumeId: String): Result<Unit> {
         val snapshot = repository.snapshot()
-        val costume = snapshot.costumes.firstOrNull { it.costumeNumber == costumeNumber }
-            ?: return Result.failure(IllegalArgumentException("Nie znaleziono stroju $costumeNumber"))
+        val costume = snapshot.costumes.firstOrNull { it.costumeId == costumeId }
+            ?: return Result.failure(IllegalArgumentException("Nie znaleziono stroju"))
 
         if (costume.availability == CostumeAvailability.AVAILABLE) {
-            return Result.failure(IllegalStateException("Strój $costumeNumber jest już dostępny"))
+            return Result.failure(
+                IllegalStateException("Strój ${costume.costumeNumber} jest już dostępny")
+            )
         }
 
         val openEntry = snapshot.historyEntries
-            .lastOrNull { it.costumeNumber == costumeNumber && it.returnedAt == null }
+            .lastOrNull { it.costumeId == costumeId && it.returnedAt == null }
             ?: return Result.failure(
-                IllegalStateException("Brak otwartego wpisu historii dla stroju $costumeNumber")
+                IllegalStateException("Brak otwartego wpisu historii dla stroju ${costume.costumeNumber}")
             )
 
         repository.upsertCostume(
@@ -75,16 +80,15 @@ class RentalService(
     }
 
     fun addCostume(category: CostumeCategory, costumeNumber: String, size: String?): Result<Unit> {
-        val normalizedNumber = costumeNumber.trim()
-        if (normalizedNumber.isBlank()) {
-            return Result.failure(IllegalArgumentException("Numer stroju nie może być pusty"))
-        }
-        val snapshot = repository.snapshot()
-        if (snapshot.costumes.any { it.costumeNumber.equals(normalizedNumber, ignoreCase = true) }) {
-            return Result.failure(IllegalArgumentException("Strój o numerze $normalizedNumber już istnieje"))
-        }
+        val normalizedNumber = costumeNumber.trim().ifBlank { "bez nr" }
+        val costumeId = buildCostumeId(
+            existingCostumes = repository.snapshot().costumes,
+            category = category,
+            costumeNumber = normalizedNumber,
+        )
         repository.upsertCostume(
             Costume(
+                costumeId = costumeId,
                 category = category,
                 costumeNumber = normalizedNumber,
                 size = size?.trim().orEmpty().ifBlank { null },
@@ -93,8 +97,53 @@ class RentalService(
         return Result.success(Unit)
     }
 
-    private fun buildOperationId(costumeNumber: String, registryNumber: String): String {
+    fun updateCostume(costumeId: String, costumeNumber: String, size: String?): Result<Unit> {
+        val snapshot = repository.snapshot()
+        val costume = snapshot.costumes.firstOrNull { it.costumeId == costumeId }
+            ?: return Result.failure(IllegalArgumentException("Nie znaleziono stroju"))
+
+        repository.upsertCostume(
+            costume.copy(
+                costumeNumber = costumeNumber.trim().ifBlank { "bez nr" },
+                size = size?.trim().orEmpty().ifBlank { null },
+            )
+        )
+        return Result.success(Unit)
+    }
+
+    fun deleteCostume(costumeId: String): Result<Unit> {
+        val snapshot = repository.snapshot()
+        val costume = snapshot.costumes.firstOrNull { it.costumeId == costumeId }
+            ?: return Result.failure(IllegalArgumentException("Nie znaleziono stroju"))
+
+        if (costume.isBorrowed) {
+            return Result.failure(
+                IllegalStateException("Nie można usunąć wypożyczonego stroju. Najpierw go zwróć.")
+            )
+        }
+
+        repository.deleteCostume(costumeId)
+        return Result.success(Unit)
+    }
+
+    private fun buildOperationId(costumeId: String, registryNumber: String): String {
         val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
-        return "$timestamp-$costumeNumber-$registryNumber"
+        return "$timestamp-$costumeId-$registryNumber"
+    }
+
+    private fun buildCostumeId(
+        existingCostumes: List<Costume>,
+        category: CostumeCategory,
+        costumeNumber: String,
+    ): String {
+        val base = "${category.name}-${costumeNumber.trim()}"
+        var sequence = 1
+        while (true) {
+            val candidate = "$base-$sequence"
+            if (existingCostumes.none { it.costumeId == candidate }) {
+                return candidate
+            }
+            sequence += 1
+        }
     }
 }

@@ -13,16 +13,20 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-class CsvImportService {
+class CsvImportService(
+    private val identityResolver: CostumeIdentityResolver = CostumeIdentityResolver(),
+) {
     fun importSnapshot(
         choirMembersCsv: String,
         costumesCsv: String,
         historyCsv: String,
     ): ChoirSnapshot {
-        return ChoirSnapshot(
-            choirMembers = importChoirMembers(choirMembersCsv),
-            costumes = importCostumes(costumesCsv),
-            historyEntries = importHistory(historyCsv),
+        return identityResolver.normalizeSnapshot(
+            ChoirSnapshot(
+                choirMembers = importChoirMembers(choirMembersCsv),
+                costumes = importCostumes(costumesCsv),
+                historyEntries = importHistory(historyCsv),
+            )
         )
     }
 
@@ -51,12 +55,10 @@ class CsvImportService {
     }
 
     fun importCostumes(csv: String): List<Costume> {
-        return parseCsv(csv).mapNotNull { row ->
+        val costumes = parseCsv(csv).mapNotNull { row ->
             val category = CostumeCategory.fromRaw(
                 row.findValue("Kategoria stroju", "Kategoria", "Category")
             ) ?: return@mapNotNull null
-            val costumeNumber = row.findValue("Numer stroju", "Numer", "CostumeNumber")
-                ?: return@mapNotNull null
 
             val rawBorrower = row.findValue(
                 "Aktualnie_Wypozyczajacy",
@@ -65,8 +67,11 @@ class CsvImportService {
             )
 
             Costume(
+                costumeId = row.findValue("ID_stroju", "id stroju", "CostumeId").orEmpty(),
                 category = category,
-                costumeNumber = costumeNumber,
+                costumeNumber = identityResolver.normalizeCostumeNumber(
+                    row.findValue("Numer stroju", "Numer", "CostumeNumber", "nr teczki", "nr stroju")
+                ),
                 size = row.findValue("Rozmiar", "Size"),
                 availability = CostumeAvailability.fromRaw(row.findValue("Status"))
                     ?: if (rawBorrower.isNullOrBlank()) {
@@ -80,17 +85,16 @@ class CsvImportService {
                 },
             )
         }
+        return identityResolver.normalizeCostumes(costumes)
     }
 
     fun importHistory(csv: String): List<RentalHistoryEntry> {
-        return parseCsv(csv).mapNotNull { row ->
+        val entries = parseCsv(csv).mapNotNull { row ->
             val category = CostumeCategory.fromRaw(
                 row.findValue("Kategoria stroju", "Kategoria", "Category")
             ) ?: return@mapNotNull null
             val borrowedAt = row.findValue("Data_wypozyczenia", "Data wypożyczenia", "BorrowedAt")
                 .toFlexibleDate() ?: return@mapNotNull null
-            val costumeNumber = row.findValue("Numer stroju", "Numer", "CostumeNumber")
-                ?: return@mapNotNull null
             val registryNumber = row.findValue(
                 "Nr ewidencyjny osoby",
                 "nr ewidencyjny osoby",
@@ -107,11 +111,20 @@ class CsvImportService {
 
             RentalHistoryEntry(
                 operationId = row.findValue("ID_Operacji", "OperationId")
-                    ?: buildFallbackOperationId(costumeNumber, registryNumber, borrowedAt),
+                    ?: buildFallbackOperationId(
+                        costumeNumber = identityResolver.normalizeCostumeNumber(
+                            row.findValue("Numer stroju", "Numer", "CostumeNumber")
+                        ),
+                        registryNumber = registryNumber,
+                        borrowedAt = borrowedAt,
+                    ),
                 borrowedAt = borrowedAt,
                 returnedAt = row.findValue("Data_zwrotu", "Data zwrotu", "ReturnedAt").toFlexibleDate(),
                 category = category,
-                costumeNumber = costumeNumber,
+                costumeId = row.findValue("ID_stroju", "id stroju", "CostumeId").orEmpty(),
+                costumeNumber = identityResolver.normalizeCostumeNumber(
+                    row.findValue("Numer stroju", "Numer", "CostumeNumber")
+                ),
                 registryNumber = registryNumber,
                 fullName = fullName,
                 deposit = row.findValue("Kaucja", "Deposit")
@@ -120,24 +133,30 @@ class CsvImportService {
                     ?.toDoubleOrNull(),
             )
         }
+        return identityResolver.normalizeHistory(entries)
     }
 
     fun importLegacyCategoryHistory(
         csv: String,
         category: CostumeCategory,
     ): List<RentalHistoryEntry> {
-        return parseCsv(csv).mapIndexedNotNull { index, row ->
-            val costumeNumber = row.findValue(
-                "Numer stroju",
-                "Numer",
-                "CostumeNumber",
-                "nr sukienki",
-                "nr stroju",
-                "nr marynarki",
-                "nr spodni",
-                "nr koszuli",
-                "nr teczki",
-            ) ?: return@mapIndexedNotNull null
+        val entries = parseCsv(csv).mapIndexedNotNull { index, row ->
+            val costumeNumber = identityResolver.normalizeCostumeNumber(
+                row.findValue(
+                    "Numer stroju",
+                    "Numer",
+                    "CostumeNumber",
+                    "nr sukienki",
+                    "nr pelerynki",
+                    "nr stroju",
+                    "numer stroju",
+                    "numer pelerynki",
+                    "nr marynarki",
+                    "nr spodni",
+                    "nr koszuli",
+                    "nr teczki",
+                )
+            )
 
             val fullName = row.findValue(
                 "imię i nazwisko",
@@ -162,9 +181,7 @@ class CsvImportService {
                 "data zwrotu",
             ).toFlexibleDate()
 
-            val effectiveBorrowedAt = borrowedAt
-                ?: returnedAt
-                ?: LocalDate.of(1970, 1, 1)
+            val effectiveBorrowedAt = borrowedAt ?: returnedAt ?: LocalDate.of(1970, 1, 1)
 
             RentalHistoryEntry(
                 operationId = row.findValue("ID_Operacji", "OperationId")
@@ -172,12 +189,14 @@ class CsvImportService {
                 borrowedAt = effectiveBorrowedAt,
                 returnedAt = returnedAt,
                 category = category,
+                costumeId = row.findValue("ID_stroju", "id stroju", "CostumeId").orEmpty(),
                 costumeNumber = costumeNumber,
                 registryNumber = registryNumber,
                 fullName = fullName,
                 deposit = null,
             )
         }
+        return identityResolver.normalizeHistory(entries)
     }
 
     private fun buildFallbackOperationId(
@@ -208,12 +227,7 @@ class CsvImportService {
             return emptyList()
         }
 
-        val delimiter = if (lines.first().count { it == ';' } >= lines.first().count { it == ',' }) {
-            ';'
-        } else {
-            ','
-        }
-
+        val delimiter = if (lines.first().count { it == ';' } >= lines.first().count { it == ',' }) ';' else ','
         val rows = lines.map { parseRow(it, delimiter) }
         val headers = rows.first().map { it.normalizeHeader() }
         return rows.drop(1).map { row ->
@@ -229,8 +243,8 @@ class CsvImportService {
         val cells = mutableListOf<String>()
         val current = StringBuilder()
         var inQuotes = false
-
         var index = 0
+
         while (index < line.length) {
             val character = line[index]
             when {

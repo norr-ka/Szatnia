@@ -25,6 +25,7 @@ object GoogleSheetsSchema {
 
     object CostumesSheet {
         const val name = "Stroje"
+        const val costumeId = "ID_stroju"
         const val category = "Kategoria stroju"
         const val costumeNumber = "Numer stroju"
         const val size = "Rozmiar"
@@ -38,6 +39,7 @@ object GoogleSheetsSchema {
         const val borrowedAt = "Data_wypozyczenia"
         const val returnedAt = "Data_zwrotu"
         const val category = "Kategoria stroju"
+        const val costumeId = "ID_stroju"
         const val costumeNumber = "Numer stroju"
         const val registryNumber = "Nr ewidencyjny osoby"
         const val fullName = "Imię i nazwisko"
@@ -55,16 +57,19 @@ interface GoogleSheetsGateway {
 
 class GoogleSheetsSnapshotMapper {
     private val dateFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy")
+    private val identityResolver = CostumeIdentityResolver()
 
     fun toSnapshot(
         choirMemberRows: List<SheetRow>,
         costumeRows: List<SheetRow>,
         historyRows: List<SheetRow>,
     ): ChoirSnapshot {
-        return ChoirSnapshot(
-            choirMembers = choirMemberRows.mapNotNull(::rowToChoirMember),
-            costumes = costumeRows.mapNotNull(::rowToCostume),
-            historyEntries = historyRows.mapNotNull(::rowToHistoryEntry),
+        return identityResolver.normalizeSnapshot(
+            ChoirSnapshot(
+                choirMembers = choirMemberRows.mapNotNull(::rowToChoirMember),
+                costumes = costumeRows.mapNotNull(::rowToCostume),
+                historyEntries = historyRows.mapNotNull(::rowToHistoryEntry),
+            )
         )
     }
 
@@ -82,6 +87,7 @@ class GoogleSheetsSnapshotMapper {
 
     fun costumeToRow(costume: Costume): SheetRow {
         return mapOf(
+            GoogleSheetsSchema.CostumesSheet.costumeId to costume.costumeId,
             GoogleSheetsSchema.CostumesSheet.category to costume.category.label,
             GoogleSheetsSchema.CostumesSheet.costumeNumber to costume.costumeNumber,
             GoogleSheetsSchema.CostumesSheet.size to costume.size,
@@ -96,6 +102,7 @@ class GoogleSheetsSnapshotMapper {
             GoogleSheetsSchema.HistorySheet.borrowedAt to entry.borrowedAt.format(dateFormatter),
             GoogleSheetsSchema.HistorySheet.returnedAt to entry.returnedAt?.format(dateFormatter),
             GoogleSheetsSchema.HistorySheet.category to entry.category.label,
+            GoogleSheetsSchema.HistorySheet.costumeId to entry.costumeId,
             GoogleSheetsSchema.HistorySheet.costumeNumber to entry.costumeNumber,
             GoogleSheetsSchema.HistorySheet.registryNumber to entry.registryNumber,
             GoogleSheetsSchema.HistorySheet.fullName to entry.fullName,
@@ -104,10 +111,8 @@ class GoogleSheetsSnapshotMapper {
     }
 
     private fun rowToChoirMember(row: SheetRow): ChoirMember? {
-        val registryNumber = row[GoogleSheetsSchema.ChoirMembersSheet.registryNumber].cleanValue()
-            ?: return null
-        val fullName = row[GoogleSheetsSchema.ChoirMembersSheet.fullName].cleanValue()
-            ?: return null
+        val registryNumber = row[GoogleSheetsSchema.ChoirMembersSheet.registryNumber].cleanValue() ?: return null
+        val fullName = row[GoogleSheetsSchema.ChoirMembersSheet.fullName].cleanValue() ?: return null
         return ChoirMember(
             fullName = fullName,
             registryNumber = registryNumber,
@@ -120,13 +125,13 @@ class GoogleSheetsSnapshotMapper {
     }
 
     private fun rowToCostume(row: SheetRow): Costume? {
-        val category = CostumeCategory.fromRaw(row[GoogleSheetsSchema.CostumesSheet.category])
-            ?: return null
-        val costumeNumber = row[GoogleSheetsSchema.CostumesSheet.costumeNumber].cleanValue()
-            ?: return null
+        val category = CostumeCategory.fromRaw(row[GoogleSheetsSchema.CostumesSheet.category]) ?: return null
         return Costume(
+            costumeId = row[GoogleSheetsSchema.CostumesSheet.costumeId].cleanValue().orEmpty(),
             category = category,
-            costumeNumber = costumeNumber,
+            costumeNumber = identityResolver.normalizeCostumeNumber(
+                row[GoogleSheetsSchema.CostumesSheet.costumeNumber].cleanValue()
+            ),
             size = row[GoogleSheetsSchema.CostumesSheet.size].cleanValue(),
             availability = CostumeAvailability.fromRaw(row[GoogleSheetsSchema.CostumesSheet.status])
                 ?: CostumeAvailability.AVAILABLE,
@@ -137,7 +142,6 @@ class GoogleSheetsSnapshotMapper {
     private fun rowToHistoryEntry(row: SheetRow): RentalHistoryEntry? {
         val operationId = row[GoogleSheetsSchema.HistorySheet.operationId].cleanValue() ?: return null
         val category = CostumeCategory.fromRaw(row[GoogleSheetsSchema.HistorySheet.category]) ?: return null
-        val costumeNumber = row[GoogleSheetsSchema.HistorySheet.costumeNumber].cleanValue() ?: return null
         val registryNumber = row[GoogleSheetsSchema.HistorySheet.registryNumber].cleanValue() ?: return null
         val fullName = row[GoogleSheetsSchema.HistorySheet.fullName].cleanValue() ?: return null
         val borrowedAt = row[GoogleSheetsSchema.HistorySheet.borrowedAt].toFlexibleDate() ?: return null
@@ -147,7 +151,10 @@ class GoogleSheetsSnapshotMapper {
             borrowedAt = borrowedAt,
             returnedAt = row[GoogleSheetsSchema.HistorySheet.returnedAt].toFlexibleDate(),
             category = category,
-            costumeNumber = costumeNumber,
+            costumeId = row[GoogleSheetsSchema.HistorySheet.costumeId].cleanValue().orEmpty(),
+            costumeNumber = identityResolver.normalizeCostumeNumber(
+                row[GoogleSheetsSchema.HistorySheet.costumeNumber].cleanValue()
+            ),
             registryNumber = registryNumber,
             fullName = fullName,
             deposit = row[GoogleSheetsSchema.HistorySheet.deposit].cleanValue()

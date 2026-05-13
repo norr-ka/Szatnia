@@ -70,6 +70,7 @@ data class ChoirMember(
 )
 
 data class Costume(
+    val costumeId: String,
     val category: CostumeCategory,
     val costumeNumber: String,
     val size: String? = null,
@@ -86,6 +87,7 @@ data class RentalHistoryEntry(
     val borrowedAt: LocalDate,
     val returnedAt: LocalDate? = null,
     val category: CostumeCategory,
+    val costumeId: String,
     val costumeNumber: String,
     val registryNumber: String,
     val fullName: String,
@@ -105,4 +107,15 @@ fun Costume.borrowerDisplayName(members: List<ChoirMember>): String? {
     return currentBorrowerRegistryNumber?.let { registry ->
         members.firstOrNull { it.registryNumber == registry }?.fullName
     } ?: currentBorrowerNameOverride
+}
+
+fun Costume.displayNumber(costumes: List<Costume>): String {
+    val similar = costumes
+        .filter { it.category == category && it.costumeNumber == costumeNumber }
+        .sortedBy { it.costumeId }
+    if (similar.size <= 1) {
+        return costumeNumber
+    }
+    val index = similar.indexOfFirst { it.costumeId == costumeId }
+    return "$costumeNumber [${index + 1}/${similar.size}]"
 }

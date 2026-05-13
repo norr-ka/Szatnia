@@ -109,6 +109,13 @@ fun SyncScreen(
                     Text("Chórzyści: ${snapshot.choirMembers.size}")
                     Text("Stroje: ${snapshot.costumes.size}")
                     Text("Historia wpisów: ${snapshot.historyEntries.size}")
+                    Text(
+                        if (coordinator.hasPendingSync) {
+                            "Sync online: oczekuje na ponowną próbę"
+                        } else {
+                            "Sync online: brak zaległych zmian"
+                        }
+                    )
                 }
             }
         }
@@ -124,7 +131,7 @@ fun SyncScreen(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "Wklej cały aktualny plik CSV. Brakujące albo zduplikowane numery ewidencyjne dostaną bezpieczne identyfikatory techniczne.",
+                        text = "Wklej cały aktualny plik CSV. Jeśli zapis online teraz się nie uda, dane zostaną zachowane lokalnie i wysłane później automatycznie.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     OutlinedTextField(
@@ -160,7 +167,7 @@ fun SyncScreen(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "Wklej historię jednej kategorii. Aplikacja przeliczy aktualny stan strojów wyłącznie z dat wypożyczeń i zwrotów.",
+                        text = "Wklej historię jednej kategorii. Aktualny stan strojów zostanie wyliczony z dat wypożyczeń i zwrotów, a zaległy sync poleci automatycznie, gdy wróci połączenie.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

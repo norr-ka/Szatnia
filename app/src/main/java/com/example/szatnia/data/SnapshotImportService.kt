@@ -13,6 +13,7 @@ data class HistoryImportSummary(
 
 class SnapshotImportService(
     private val csvImportService: CsvImportService = CsvImportService(),
+    private val identityResolver: CostumeIdentityResolver = CostumeIdentityResolver(),
 ) {
     fun replaceChoirMembers(snapshot: ChoirSnapshot, csv: String): Pair<ChoirSnapshot, Int> {
         val members = csvImportService.importChoirMembers(csv)
@@ -49,33 +50,37 @@ class SnapshotImportService(
         historyEntries: List<RentalHistoryEntry>,
         category: CostumeCategory,
     ): List<Costume> {
-        val existingByNumber = existingCostumes
+        val existingById = existingCostumes
             .filter { it.category == category }
-            .associateBy { it.costumeNumber }
-        val numbers = (existingByNumber.keys + historyEntries
+            .associateBy { it.costumeId }
+        val costumeIds = (existingById.keys + historyEntries
             .filter { it.category == category }
-            .map { it.costumeNumber })
+            .map { it.costumeId })
             .sorted()
 
-        return numbers.map { costumeNumber ->
-            val existing = existingByNumber[costumeNumber]
+        val rebuilt = costumeIds.map { costumeId ->
+            val existing = existingById[costumeId]
             val openEntry = historyEntries.lastOrNull {
                 it.category == category &&
-                    it.costumeNumber == costumeNumber &&
+                    it.costumeId == costumeId &&
                     it.returnedAt == null
             }
 
             if (openEntry == null) {
                 Costume(
+                    costumeId = costumeId,
                     category = category,
-                    costumeNumber = costumeNumber,
+                    costumeNumber = existing?.costumeNumber
+                        ?: historyEntries.lastOrNull { it.costumeId == costumeId }?.costumeNumber
+                        ?: "bez nr",
                     size = existing?.size,
                     availability = CostumeAvailability.AVAILABLE,
                 )
             } else {
                 Costume(
+                    costumeId = costumeId,
                     category = category,
-                    costumeNumber = costumeNumber,
+                    costumeNumber = openEntry.costumeNumber,
                     size = existing?.size,
                     availability = CostumeAvailability.BORROWED,
                     currentBorrowerRegistryNumber = openEntry.registryNumber,
@@ -83,5 +88,6 @@ class SnapshotImportService(
                 )
             }
         }
+        return identityResolver.normalizeCostumes(rebuilt)
     }
 }

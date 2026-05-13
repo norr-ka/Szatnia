@@ -10,6 +10,7 @@ interface ChoirRepository {
     fun replaceSnapshot(snapshot: ChoirSnapshot)
     fun upsertChoirMember(member: ChoirMember)
     fun upsertCostume(costume: Costume)
+    fun deleteCostume(costumeId: String)
     fun appendHistoryEntry(entry: RentalHistoryEntry)
     fun upsertHistoryEntry(entry: RentalHistoryEntry)
 }

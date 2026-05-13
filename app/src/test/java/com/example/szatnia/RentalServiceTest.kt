@@ -15,45 +15,45 @@ import org.junit.Test
 
 class RentalServiceTest {
     @Test
-    fun borrowingUpdatesCostumeAndAppendsHistory() {
+    fun borrowingUpdatesSpecificCostumeAndAppendsHistory() {
         val repository = InMemoryChoirRepository()
         val service = RentalService(repository)
 
         val result = service.borrowCostume(
             operationDate = LocalDate.of(2026, 3, 27),
-            costumeNumber = "T7",
+            costumeId = "CONCERT_FOLDERS-T7-1",
             registryNumber = "001",
             deposit = 50.0,
         )
 
         assertTrue(result.isSuccess)
         val snapshot = repository.snapshot()
-        val costume = snapshot.costumes.first { it.costumeNumber == "T7" }
+        val costume = snapshot.costumes.first { it.costumeId == "CONCERT_FOLDERS-T7-1" }
         assertEquals(CostumeAvailability.BORROWED, costume.availability)
         assertEquals("001", costume.currentBorrowerRegistryNumber)
 
-        val history = snapshot.historyEntries.last { it.costumeNumber == "T7" }
+        val history = snapshot.historyEntries.last { it.costumeId == "CONCERT_FOLDERS-T7-1" }
         assertEquals(LocalDate.of(2026, 3, 27), history.borrowedAt)
         assertEquals(50.0, history.deposit)
     }
 
     @Test
-    fun returningClosesOpenHistoryEntry() {
+    fun returningClosesOpenHistoryEntryForExactCostumeId() {
         val repository = InMemoryChoirRepository()
         val service = RentalService(repository)
 
         val result = service.returnCostume(
             operationDate = LocalDate.of(2026, 3, 27),
-            costumeNumber = "M3",
+            costumeId = "JACKETS-M3-1",
         )
 
         assertTrue(result.isSuccess)
         val snapshot = repository.snapshot()
-        val costume = snapshot.costumes.first { it.costumeNumber == "M3" }
+        val costume = snapshot.costumes.first { it.costumeId == "JACKETS-M3-1" }
         assertEquals(CostumeAvailability.AVAILABLE, costume.availability)
         assertNull(costume.currentBorrowerRegistryNumber)
 
-        val history = snapshot.historyEntries.first { it.costumeNumber == "M3" }
+        val history = snapshot.historyEntries.first { it.costumeId == "JACKETS-M3-1" }
         assertEquals(LocalDate.of(2026, 3, 27), history.returnedAt)
     }
 
@@ -71,6 +71,7 @@ class RentalServiceTest {
         assertEquals(CostumeCategory.CONCERT_FOLDERS, entries.first().category)
         assertEquals("Anna Kowalska", entries.first().fullName)
         assertEquals(40.5, entries.first().deposit)
+        assertTrue(entries.first().costumeId.isNotBlank())
     }
 
     @Test
@@ -106,8 +107,44 @@ class RentalServiceTest {
         )
 
         assertEquals(2, summary.importedEntries)
-        val costume = snapshot.costumes.first { it.category == CostumeCategory.RED_DRESSES && it.costumeNumber == "A6" }
+        val costume = snapshot.costumes.first {
+            it.category == CostumeCategory.RED_DRESSES && it.costumeNumber == "A6"
+        }
         assertEquals(CostumeAvailability.BORROWED, costume.availability)
         assertEquals("A036BROMIL", costume.currentBorrowerRegistryNumber)
+    }
+
+    @Test
+    fun legacyImportCreatesSeparateIdsForDuplicateNumbers() {
+        val csv = """
+            ImieJesliZwrocone,nr teczki,data wypożyczenia,data zwrotu,imię i nazwisko,nr ewidencyjny osoby
+            ,bez nr,1.01.2026,,Anna Kowalska,001
+            ,bez nr,2.01.2026,,Marta Nowak,002
+        """.trimIndent()
+
+        val entries = CsvImportService().importLegacyCategoryHistory(
+            csv = csv,
+            category = CostumeCategory.CONCERT_FOLDERS,
+        )
+
+        assertEquals(2, entries.size)
+        assertNotEquals(entries[0].costumeId, entries[1].costumeId)
+    }
+
+    @Test
+    fun legacyCapeImportReadsNrPelerynkiColumn() {
+        val csv = """
+            nr pelerynki,data wypożyczenia,data zwrotu,imię i nazwisko,nr ewidencyjny osoby
+            P-20,,3.07.2025,Adamczak Aleksandra,S001ADAALE
+            P-41,16.01.2025,,Brodzińska Milena,A036BROMIL
+        """.trimIndent()
+
+        val entries = CsvImportService().importLegacyCategoryHistory(
+            csv = csv,
+            category = CostumeCategory.CAPES,
+        )
+
+        assertEquals(2, entries.size)
+        assertEquals(setOf("P-20", "P-41"), entries.map { it.costumeNumber }.toSet())
     }
 }

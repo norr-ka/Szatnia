@@ -44,12 +44,16 @@ class InMemoryChoirRepository(
     }
 
     override fun upsertCostume(costume: Costume) {
-        val existingIndex = costumes.indexOfFirst { it.costumeNumber == costume.costumeNumber }
+        val existingIndex = costumes.indexOfFirst { it.costumeId == costume.costumeId }
         if (existingIndex == -1) {
             costumes += costume
         } else {
             costumes[existingIndex] = costume
         }
+    }
+
+    override fun deleteCostume(costumeId: String) {
+        costumes.removeAll { it.costumeId == costumeId }
     }
 
     override fun appendHistoryEntry(entry: RentalHistoryEntry) {
@@ -108,11 +112,13 @@ class InMemoryChoirRepository(
                 ),
                 costumes = listOf(
                     Costume(
+                        costumeId = "RED_DRESSES-A19-1",
                         category = CostumeCategory.RED_DRESSES,
                         costumeNumber = "A19",
                         size = "M",
                     ),
                     Costume(
+                        costumeId = "RED_DRESSES-A20-1",
                         category = CostumeCategory.RED_DRESSES,
                         costumeNumber = "A20",
                         size = "S",
@@ -120,6 +126,7 @@ class InMemoryChoirRepository(
                         currentBorrowerRegistryNumber = "002",
                     ),
                     Costume(
+                        costumeId = "JACKETS-M3-1",
                         category = CostumeCategory.JACKETS,
                         costumeNumber = "M3",
                         size = "L",
@@ -127,11 +134,13 @@ class InMemoryChoirRepository(
                         currentBorrowerRegistryNumber = "010",
                     ),
                     Costume(
+                        costumeId = "CONCERT_FOLDERS-T7-1",
                         category = CostumeCategory.CONCERT_FOLDERS,
                         costumeNumber = "T7",
                         size = null,
                     ),
                     Costume(
+                        costumeId = "WHITE_SHIRTS-K11-1",
                         category = CostumeCategory.WHITE_SHIRTS,
                         costumeNumber = "K11",
                         size = "XL",
@@ -142,6 +151,7 @@ class InMemoryChoirRepository(
                         operationId = "20260301081500-A20-002",
                         borrowedAt = LocalDate.of(2026, 3, 1),
                         category = CostumeCategory.RED_DRESSES,
+                        costumeId = "RED_DRESSES-A20-1",
                         costumeNumber = "A20",
                         registryNumber = "002",
                         fullName = "Marta Nowak",
@@ -151,6 +161,7 @@ class InMemoryChoirRepository(
                         operationId = "20260315100000-M3-010",
                         borrowedAt = LocalDate.of(2026, 3, 15),
                         category = CostumeCategory.JACKETS,
+                        costumeId = "JACKETS-M3-1",
                         costumeNumber = "M3",
                         registryNumber = "010",
                         fullName = "Piotr Zielinski",

@@ -1,4 +1,4 @@
-package com.example.szatnia.ui
+﻿package com.example.szatnia.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -53,12 +53,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.szatnia.domain.RentalHistoryEntry
 import com.example.szatnia.data.ChoirRepository
 import com.example.szatnia.data.GoogleSheetsSyncService
 import com.example.szatnia.data.HistoryImportSummary
+import com.example.szatnia.data.LocalSnapshotStore
 import com.example.szatnia.data.SnapshotImportService
 import com.example.szatnia.data.SyncPreferences
 import com.example.szatnia.domain.ChoirMember
@@ -70,6 +74,7 @@ import com.example.szatnia.domain.MemberStatus
 import com.example.szatnia.domain.RentalService
 import com.example.szatnia.domain.VoicePart
 import com.example.szatnia.domain.borrowerDisplayName
+import com.example.szatnia.domain.displayNumber
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -93,6 +98,7 @@ class SzatniaCoordinator(
     private val repository: ChoirRepository,
     private val syncPreferences: SyncPreferences,
     private val syncService: GoogleSheetsSyncService,
+    private val localSnapshotStore: LocalSnapshotStore,
     private val snapshotImportService: SnapshotImportService = SnapshotImportService(),
 ) {
     private val rentalService = RentalService(repository)
@@ -107,6 +113,9 @@ class SzatniaCoordinator(
         private set
 
     var webAppUrl by mutableStateOf(syncPreferences.getWebAppUrl().orEmpty())
+        private set
+
+    var hasPendingSync by mutableStateOf(localSnapshotStore.isPendingSync())
         private set
 
     fun goTo(screen: Screen) {
@@ -135,21 +144,29 @@ class SzatniaCoordinator(
         }
     }
 
-    fun borrowCostume(costumeNumber: String, registryNumber: String, deposit: Double?): Result<Unit> {
+    fun borrowCostume(costumeId: String, registryNumber: String, deposit: Double?): Result<Unit> {
         return rentalService.borrowCostume(
             operationDate = sessionDate,
-            costumeNumber = costumeNumber,
+            costumeId = costumeId,
             registryNumber = registryNumber,
             deposit = deposit,
         ).also { refresh() }
     }
 
-    fun returnCostume(costumeNumber: String): Result<Unit> {
-        return rentalService.returnCostume(sessionDate, costumeNumber).also { refresh() }
+    fun returnCostume(costumeId: String): Result<Unit> {
+        return rentalService.returnCostume(sessionDate, costumeId).also { refresh() }
     }
 
     fun addCostume(category: CostumeCategory, costumeNumber: String, size: String?): Result<Unit> {
         return rentalService.addCostume(category, costumeNumber, size).also { refresh() }
+    }
+
+    fun updateCostume(costumeId: String, costumeNumber: String, size: String?): Result<Unit> {
+        return rentalService.updateCostume(costumeId, costumeNumber, size).also { refresh() }
+    }
+
+    fun deleteCostume(costumeId: String): Result<Unit> {
+        return rentalService.deleteCostume(costumeId).also { refresh() }
     }
 
     fun updateWebAppUrl(url: String) {
@@ -171,6 +188,7 @@ class SzatniaCoordinator(
             val snapshotFromSheets = syncService.loadSnapshot(requireWebAppUrl()).getOrThrow()
             repository.replaceSnapshot(snapshotFromSheets)
             refresh()
+            markPendingSync(false)
             "Pobrano dane z Google Sheets"
         }
     }
@@ -178,6 +196,7 @@ class SzatniaCoordinator(
     suspend fun pushToSheets(): Result<String> {
         return runCatching {
             syncService.replaceSnapshot(requireWebAppUrl(), snapshot).getOrThrow()
+            markPendingSync(false)
             "Zapisano pełny stan do Google Sheets"
         }
     }
@@ -188,8 +207,12 @@ class SzatniaCoordinator(
             val (updatedSnapshot, importedCount) = snapshotImportService.replaceChoirMembers(snapshot, csv)
             repository.replaceSnapshot(updatedSnapshot)
             refresh()
-            pushIfConfigured()
-            "Zaimportowano $importedCount chórzystów"
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) {
+                "Zaimportowano $importedCount chórzystów lokalnie. Sync online oczekuje."
+            } else {
+                "Zaimportowano $importedCount chórzystów"
+            }
         }
     }
 
@@ -203,28 +226,34 @@ class SzatniaCoordinator(
             )
             repository.replaceSnapshot(updatedSnapshot)
             refresh()
-            pushIfConfigured()
-            summary.toMessage(category)
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) {
+                "${summary.toMessage(category)} lokalnie. Sync online oczekuje."
+            } else {
+                summary.toMessage(category)
+            }
         }
     }
 
     suspend fun borrowCostumeAndSync(
-        costumeNumber: String,
+        costumeId: String,
         registryNumber: String,
         deposit: Double?,
     ): Result<String> {
         return runCatching {
-            borrowCostume(costumeNumber, registryNumber, deposit).getOrThrow()
-            pushIfConfigured()
-            "Zapisano wypożyczenie"
+            borrowCostume(costumeId, registryNumber, deposit).getOrThrow()
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) "Zapisano wypożyczenie lokalnie. Sync online oczekuje."
+            else "Zapisano wypożyczenie"
         }
     }
 
-    suspend fun returnCostumeAndSync(costumeNumber: String): Result<String> {
+    suspend fun returnCostumeAndSync(costumeId: String): Result<String> {
         return runCatching {
-            returnCostume(costumeNumber).getOrThrow()
-            pushIfConfigured()
-            "Zapisano zwrot"
+            returnCostume(costumeId).getOrThrow()
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) "Zapisano zwrot lokalnie. Sync online oczekuje."
+            else "Zapisano zwrot"
         }
     }
 
@@ -235,18 +264,69 @@ class SzatniaCoordinator(
     ): Result<String> {
         return runCatching {
             addCostume(category, costumeNumber, size).getOrThrow()
-            pushIfConfigured()
-            "Dodano strój"
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) "Dodano strój lokalnie. Sync online oczekuje."
+            else "Dodano strój"
+        }
+    }
+
+    suspend fun updateCostumeAndSync(
+        costumeId: String,
+        costumeNumber: String,
+        size: String?,
+    ): Result<String> {
+        return runCatching {
+            updateCostume(costumeId, costumeNumber, size).getOrThrow()
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) "Zaktualizowano strój lokalnie. Sync online oczekuje."
+            else "Zaktualizowano strój"
+        }
+    }
+
+    suspend fun deleteCostumeAndSync(costumeId: String): Result<String> {
+        return runCatching {
+            deleteCostume(costumeId).getOrThrow()
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) "Usunięto strój lokalnie. Sync online oczekuje."
+            else "Usunięto strój"
+        }
+    }
+
+    suspend fun trySyncPendingChanges(): Result<String> {
+        return runCatching {
+            if (!hasPendingSync) {
+                "Brak oczekujących zmian"
+            } else if (webAppUrl.isBlank()) {
+                "Brak adresu Google Sheets, zmiany pozostają lokalnie"
+            } else {
+                syncService.replaceSnapshot(requireWebAppUrl(), snapshot).getOrThrow()
+                markPendingSync(false)
+                "Zsynchronizowano lokalne zmiany z Google Sheets"
+            }
         }
     }
 
     private fun refresh() {
         snapshot = repository.snapshot()
+        localSnapshotStore.saveSnapshot(snapshot)
     }
 
-    private suspend fun pushIfConfigured() {
-        if (webAppUrl.isBlank()) return
-        syncService.replaceSnapshot(webAppUrl, snapshot).getOrThrow()
+    private suspend fun pushIfConfiguredOrMarkPending() {
+        if (webAppUrl.isBlank()) {
+            markPendingSync(true)
+            return
+        }
+        if (syncService.replaceSnapshot(webAppUrl, snapshot).isSuccess) {
+            markPendingSync(false)
+        } else {
+            markPendingSync(true)
+        }
+    }
+
+    private fun markPendingSync(value: Boolean) {
+        hasPendingSync = value
+        localSnapshotStore.setPendingSync(value)
+        localSnapshotStore.saveSnapshot(snapshot)
     }
 
     private fun requireWebAppUrl(): String {
@@ -261,7 +341,7 @@ class SzatniaCoordinator(
 }
 
 data class BorrowDialogState(
-    val presetCostumeNumber: String? = null,
+    val presetCostumeId: String? = null,
     val presetRegistryNumber: String? = null,
 )
 
@@ -277,11 +357,15 @@ fun SzatniaApp(
     var showDatePicker by rememberSaveable { mutableStateOf(false) }
     var addCostumeDialogOpen by rememberSaveable { mutableStateOf(false) }
     var borrowDialogState by remember { mutableStateOf<BorrowDialogState?>(null) }
+    var costumeToEdit by remember { mutableStateOf<Costume?>(null) }
+    var costumeToDelete by remember { mutableStateOf<Costume?>(null) }
 
     LaunchedEffect(Unit) {
+        coordinator.trySyncPendingChanges()
         while (true) {
             delay(60_000)
             coordinator.autoResetDateIfNeeded()
+            coordinator.trySyncPendingChanges()
         }
     }
 
@@ -343,12 +427,18 @@ fun SzatniaApp(
                     category = screen.category,
                     snapshot = snapshot,
                     onBorrowClick = { costume ->
-                        borrowDialogState = BorrowDialogState(presetCostumeNumber = costume.costumeNumber)
+                        borrowDialogState = BorrowDialogState(presetCostumeId = costume.costumeId)
                     },
                     onReturnClick = { costume ->
                         scope.launch {
-                            coordinator.returnCostumeAndSync(costume.costumeNumber).showIn(snackbars, this)
+                            coordinator.returnCostumeAndSync(costume.costumeId).showIn(snackbars, this)
                         }
+                    },
+                    onEditClick = { costume ->
+                        costumeToEdit = costume
+                    },
+                    onDeleteClick = { costume ->
+                        costumeToDelete = costume
                     },
                 )
 
@@ -372,7 +462,7 @@ fun SzatniaApp(
                             snapshot = snapshot,
                             onReturnClick = { costume ->
                                 scope.launch {
-                                    coordinator.returnCostumeAndSync(costume.costumeNumber).showIn(snackbars, this)
+                                    coordinator.returnCostumeAndSync(costume.costumeId).showIn(snackbars, this)
                                 }
                             },
                             onBorrowNewClick = {
@@ -408,14 +498,41 @@ fun SzatniaApp(
         )
     }
 
+    costumeToEdit?.let { costume ->
+        EditCostumeDialog(
+            costume = costume,
+            onDismiss = { costumeToEdit = null },
+            onConfirm = { costumeNumber, size ->
+                scope.launch {
+                    coordinator.updateCostumeAndSync(costume.costumeId, costumeNumber, size)
+                        .showIn(snackbars, this)
+                    costumeToEdit = null
+                }
+            },
+        )
+    }
+
+    costumeToDelete?.let { costume ->
+        ConfirmDeleteCostumeDialog(
+            costume = costume,
+            onDismiss = { costumeToDelete = null },
+            onConfirm = {
+                scope.launch {
+                    coordinator.deleteCostumeAndSync(costume.costumeId).showIn(snackbars, this)
+                    costumeToDelete = null
+                }
+            },
+        )
+    }
+
     borrowDialogState?.let { dialogState ->
         BorrowCostumeDialog(
             snapshot = snapshot,
             state = dialogState,
             onDismiss = { borrowDialogState = null },
-            onConfirm = { costumeNumber, registryNumber, deposit ->
+            onConfirm = { costumeId, registryNumber, deposit ->
                 scope.launch {
-                    coordinator.borrowCostumeAndSync(costumeNumber, registryNumber, deposit)
+                    coordinator.borrowCostumeAndSync(costumeId, registryNumber, deposit)
                         .showIn(snackbars, this)
                     borrowDialogState = null
                 }
@@ -534,12 +651,24 @@ private fun CostumeListScreen(
     snapshot: ChoirSnapshot,
     onBorrowClick: (Costume) -> Unit,
     onReturnClick: (Costume) -> Unit,
+    onEditClick: (Costume) -> Unit,
+    onDeleteClick: (Costume) -> Unit,
 ) {
+    val clipboardManager = LocalClipboardManager.current
+    var borrowersDialogVisible by rememberSaveable(category.name) { mutableStateOf(false) }
     val costumes = remember(snapshot, category) {
         snapshot.costumes
             .filter { it.category == category }
-            .sortedBy { it.costumeNumber }
+            .sortedWith(compareBy<Costume>({ it.isBorrowed }, { it.costumeNumber }, { it.costumeId }))
     }
+    val borrowersList = remember(snapshot, category) {
+        snapshot.costumes
+            .filter { it.category == category && it.isBorrowed }
+            .mapNotNull { it.borrowerDisplayName(snapshot.choirMembers) }
+            .distinct()
+            .sorted()
+    }
+    val borrowersText = remember(borrowersList) { borrowersList.joinToString(separator = "\n") }
 
     if (costumes.isEmpty()) {
         EmptyState(
@@ -549,29 +678,101 @@ private fun CostumeListScreen(
         return
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        items(costumes) { costume ->
-            val borrowerName = costume.borrowerDisplayName(snapshot.choirMembers)
-            CostumeCard(
-                costume = costume,
-                borrowerName = borrowerName,
-                onBorrowClick = { onBorrowClick(costume) },
-                onReturnClick = { onReturnClick(costume) },
-            )
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 88.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(costumes) { costume ->
+                val borrowerName = costume.borrowerDisplayName(snapshot.choirMembers)
+                CostumeCard(
+                    costume = costume,
+                    displayNumber = costume.displayNumber(costumes),
+                    borrowerName = borrowerName,
+                    onBorrowClick = { onBorrowClick(costume) },
+                    onReturnClick = { onReturnClick(costume) },
+                    onEditClick = { onEditClick(costume) },
+                    onDeleteClick = { onDeleteClick(costume) },
+                )
+            }
+        }
+
+        FloatingActionButton(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+            onClick = { borrowersDialogVisible = true },
+        ) {
+            Text("≡")
         }
     }
-}
 
+    if (borrowersDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { borrowersDialogVisible = false },
+            title = { Text("Osoby z tym strojem") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = borrowersList.isNotEmpty(),
+                        onClick = { clipboardManager.setText(AnnotatedString(borrowersText)) },
+                    ) {
+                        Text("KOPIUJ LISTĘ")
+                    }
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        ),
+                    ) {
+                        if (borrowersList.isEmpty()) {
+                            Text(
+                                text = "Brak aktualnych wypożyczeń w tej kategorii.",
+                                modifier = Modifier.padding(16.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(260.dp),
+                                contentPadding = PaddingValues(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                items(borrowersList) { borrower ->
+                                    Text(
+                                        text = borrower,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { borrowersDialogVisible = false }) {
+                    Text("Zamknij")
+                }
+            },
+        )
+    }
+}
 @Composable
 private fun CostumeCard(
     costume: Costume,
+    displayNumber: String,
     borrowerName: String?,
     onBorrowClick: () -> Unit,
     onReturnClick: () -> Unit,
+    onEditClick: () -> Unit,
+    onDeleteClick: () -> Unit,
 ) {
     val statusColor = if (costume.availability == CostumeAvailability.AVAILABLE) {
         Color(0xFF3C8C54)
@@ -584,46 +785,69 @@ private fun CostumeCard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(8.dp)
+                    .height(6.dp)
                     .background(statusColor),
             )
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = costume.costumeNumber,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    text = "Rozmiar: ${costume.size ?: "brak"}",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = if (costume.availability == CostumeAvailability.AVAILABLE) {
-                        "Status: dostępny"
-                    } else {
-                        "Status: wypożyczony przez ${borrowerName ?: "nieznaną osobę"}"
-                    },
-                    color = statusColor,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Button(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = if (costume.availability == CostumeAvailability.AVAILABLE) {
-                        onBorrowClick
-                    } else {
-                        onReturnClick
-                    },
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
-                        if (costume.availability == CostumeAvailability.AVAILABLE) {
-                            "WYPOŻYCZ"
-                        } else {
-                            "ZWRÓĆ"
-                        }
+                        text = displayNumber,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
                     )
+                    Text(
+                        text = "Rozmiar: ${costume.size ?: "brak"}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = if (costume.availability == CostumeAvailability.AVAILABLE) {
+                            "Dostępny"
+                        } else {
+                            "Wypożyczony: ${borrowerName ?: "nieznana osoba"}"
+                        },
+                        color = statusColor,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = onEditClick) {
+                            Text("Edytuj")
+                        }
+                        TextButton(
+                            enabled = !costume.isBorrowed,
+                            onClick = onDeleteClick,
+                        ) {
+                            Text("Usuń")
+                        }
+                    }
+                    Button(
+                        onClick = if (costume.availability == CostumeAvailability.AVAILABLE) {
+                            onBorrowClick
+                        } else {
+                            onReturnClick
+                        },
+                    ) {
+                        Text(
+                            if (costume.availability == CostumeAvailability.AVAILABLE) {
+                                "Wypożycz"
+                            } else {
+                                "Zwróć"
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -761,7 +985,15 @@ private fun MemberProfileScreen(
     val currentCostumes = remember(snapshot, member.registryNumber) {
         snapshot.costumes
             .filter { it.currentBorrowerRegistryNumber == member.registryNumber }
-            .sortedBy { it.costumeNumber }
+            .sortedWith(compareBy({ it.costumeNumber }, { it.costumeId }))
+    }
+    val memberHistory = remember(snapshot, member.registryNumber) {
+        snapshot.historyEntries
+            .filter { it.registryNumber == member.registryNumber }
+            .sortedWith(
+                compareByDescending<RentalHistoryEntry> { it.borrowedAt }
+                    .thenByDescending { it.operationId }
+            )
     }
 
     LazyColumn(
@@ -818,7 +1050,7 @@ private fun MemberProfileScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            text = "${costume.category.label} • ${costume.costumeNumber}",
+                            text = "${costume.category.label} • ${costume.displayNumber(snapshot.costumes)}",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -831,6 +1063,60 @@ private fun MemberProfileScreen(
                             onClick = { onReturnClick(costume) },
                         ) {
                             Text("ZWRÓĆ")
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Historia wypożyczeń",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        if (memberHistory.isEmpty()) {
+            item {
+                Card {
+                    Text(
+                        text = "Brak zapisanej historii wypożyczeń dla tej osoby.",
+                        modifier = Modifier.padding(18.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        } else {
+            items(memberHistory) { entry ->
+                Card {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = "${entry.category.label} • ${entry.costumeNumber}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = "Wypożyczono: ${entry.borrowedAt.format(dateFormatter)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = entry.returnedAt?.let {
+                                "Zwrócono: ${it.format(dateFormatter)}"
+                            } ?: "Status: nadal wypożyczony",
+                            color = if (entry.returnedAt == null) {
+                                Color(0xFFB94646)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        entry.deposit?.let { deposit ->
+                            Text(
+                                text = "Kaucja: $deposit",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
@@ -943,6 +1229,73 @@ private fun AddCostumeDialog(
 }
 
 @Composable
+private fun EditCostumeDialog(
+    costume: Costume,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String?) -> Unit,
+) {
+    var costumeNumber by rememberSaveable(costume.costumeId) { mutableStateOf(costume.costumeNumber) }
+    var size by rememberSaveable(costume.costumeId) { mutableStateOf(costume.size.orEmpty()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edytuj strój") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(text = "Kategoria: ${costume.category.label}")
+                OutlinedTextField(
+                    value = costumeNumber,
+                    onValueChange = { costumeNumber = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Numer stroju") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = size,
+                    onValueChange = { size = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Rozmiar") },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(costumeNumber, size.ifBlank { null }) }) {
+                Text("Zapisz")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Anuluj")
+            }
+        },
+    )
+}
+
+@Composable
+private fun ConfirmDeleteCostumeDialog(
+    costume: Costume,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Usuń strój") },
+        text = { Text("Usunąć ${costume.category.label.lowercase()} ${costume.costumeNumber}?") },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text("Usuń")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Anuluj")
+            }
+        },
+    )
+}
+
+@Composable
 private fun BorrowCostumeDialog(
     snapshot: ChoirSnapshot,
     state: BorrowDialogState,
@@ -955,15 +1308,15 @@ private fun BorrowCostumeDialog(
     var selectedRegistryNumber by remember(state.presetRegistryNumber) {
         mutableStateOf(state.presetRegistryNumber)
     }
-    var selectedCostumeNumber by remember(state.presetCostumeNumber) {
-        mutableStateOf(state.presetCostumeNumber)
+    var selectedCostumeId by remember(state.presetCostumeId) {
+        mutableStateOf(state.presetCostumeId)
     }
     var depositInput by rememberSaveable { mutableStateOf("") }
 
     val availableCostumes = remember(snapshot) {
         snapshot.costumes
             .filter { it.availability == CostumeAvailability.AVAILABLE }
-            .sortedWith(compareBy({ it.category.label }, { it.costumeNumber }))
+            .sortedWith(compareBy({ it.category.label }, { it.costumeNumber }, { it.costumeId }))
     }
     val filteredCostumes = remember(availableCostumes, costumeQuery, selectedCategories) {
         availableCostumes.filter { costume ->
@@ -988,10 +1341,10 @@ private fun BorrowCostumeDialog(
             .sortedBy { it.fullName }
     }
 
-    val selectedCostume = availableCostumes.firstOrNull { it.costumeNumber == selectedCostumeNumber }
+    val selectedCostume = availableCostumes.firstOrNull { it.costumeId == selectedCostumeId }
     val selectedMember = snapshot.choirMembers.firstOrNull { it.registryNumber == selectedRegistryNumber }
     val requiresDeposit = selectedCostume?.category?.requiresDeposit == true
-    val isConfirmEnabled = selectedCostumeNumber != null &&
+    val isConfirmEnabled = selectedCostumeId != null &&
         selectedRegistryNumber != null &&
         (!requiresDeposit || depositInput.replace(',', '.').toDoubleOrNull() != null)
 
@@ -1012,7 +1365,7 @@ private fun BorrowCostumeDialog(
                         singleLine = true,
                     )
                     SelectionList(
-                        items = filteredMembers.take(6),
+                        items = filteredMembers,
                         selectedItem = selectedMember,
                         itemLabel = { "${it.fullName} • ${it.registryNumber}" },
                         onSelect = { selectedRegistryNumber = it.registryNumber },
@@ -1026,7 +1379,7 @@ private fun BorrowCostumeDialog(
 
                 HorizontalDivider()
 
-                if (state.presetCostumeNumber == null) {
+                if (state.presetCostumeId == null) {
                     OutlinedTextField(
                         value = costumeQuery,
                         onValueChange = { costumeQuery = it },
@@ -1054,16 +1407,16 @@ private fun BorrowCostumeDialog(
                         }
                     }
                     SelectionList(
-                        items = filteredCostumes.take(6),
+                        items = filteredCostumes,
                         selectedItem = selectedCostume,
                         itemLabel = {
-                            "${it.category.label} • ${it.costumeNumber}${it.size?.let { size -> " • $size" } ?: ""}"
+                            "${it.category.label} • ${it.displayNumber(snapshot.costumes)}${it.size?.let { size -> " • $size" } ?: ""}"
                         },
-                        onSelect = { selectedCostumeNumber = it.costumeNumber },
+                        onSelect = { selectedCostumeId = it.costumeId },
                     )
                 } else {
                     Text(
-                        text = "Strój: ${selectedCostume?.category?.label ?: ""} ${state.presetCostumeNumber}",
+                        text = "Strój: ${selectedCostume?.category?.label ?: ""} ${selectedCostume?.displayNumber(snapshot.costumes) ?: ""}",
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
@@ -1084,7 +1437,7 @@ private fun BorrowCostumeDialog(
                 enabled = isConfirmEnabled,
                 onClick = {
                     onConfirm(
-                        selectedCostumeNumber.orEmpty(),
+                        selectedCostumeId.orEmpty(),
                         selectedRegistryNumber.orEmpty(),
                         depositInput.replace(',', '.').toDoubleOrNull(),
                     )
