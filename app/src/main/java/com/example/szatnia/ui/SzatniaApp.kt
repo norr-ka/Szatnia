@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -161,6 +162,42 @@ class SzatniaCoordinator(
         return rentalService.addCostume(category, costumeNumber, size).also { refresh() }
     }
 
+    fun addChoirMember(member: ChoirMember): Result<Unit> {
+        return runCatching {
+            val normalized = member.copy(
+                fullName = member.fullName.trim(),
+                registryNumber = member.registryNumber.trim(),
+                phone = member.phone?.trim()?.ifBlank { null },
+                email = member.email?.trim()?.ifBlank { null },
+                size = member.size?.trim()?.ifBlank { null },
+            )
+            require(normalized.fullName.isNotBlank()) { "Podaj imię i nazwisko" }
+            require(normalized.registryNumber.isNotBlank()) { "Podaj numer ewidencyjny" }
+            require(snapshot.choirMembers.none { it.registryNumber.equals(normalized.registryNumber, true) }) {
+                "Chórzysta o tym numerze ewidencyjnym już istnieje"
+            }
+            repository.upsertChoirMember(normalized)
+            refresh()
+        }
+    }
+
+    fun updateChoirMember(originalRegistryNumber: String, member: ChoirMember): Result<Unit> {
+        return runCatching {
+            val normalized = member.copy(
+                fullName = member.fullName.trim(),
+                phone = member.phone?.trim()?.ifBlank { null },
+                email = member.email?.trim()?.ifBlank { null },
+                size = member.size?.trim()?.ifBlank { null },
+            )
+            require(normalized.fullName.isNotBlank()) { "Podaj imię i nazwisko" }
+            require(snapshot.choirMembers.any { it.registryNumber == originalRegistryNumber }) {
+                "Nie znaleziono chórzysty"
+            }
+            repository.upsertChoirMember(normalized)
+            refresh()
+        }
+    }
+
     fun updateCostume(costumeId: String, costumeNumber: String, size: String?): Result<Unit> {
         return rentalService.updateCostume(costumeId, costumeNumber, size).also { refresh() }
     }
@@ -270,6 +307,24 @@ class SzatniaCoordinator(
         }
     }
 
+    suspend fun addChoirMemberAndSync(member: ChoirMember): Result<String> {
+        return runCatching {
+            addChoirMember(member).getOrThrow()
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) "Dodano chórzystę lokalnie. Sync online oczekuje."
+            else "Dodano chórzystę"
+        }
+    }
+
+    suspend fun updateChoirMemberAndSync(originalRegistryNumber: String, member: ChoirMember): Result<String> {
+        return runCatching {
+            updateChoirMember(originalRegistryNumber, member).getOrThrow()
+            pushIfConfiguredOrMarkPending()
+            if (hasPendingSync) "Zaktualizowano profil lokalnie. Sync online oczekuje."
+            else "Zaktualizowano profil chórzysty"
+        }
+    }
+
     suspend fun updateCostumeAndSync(
         costumeId: String,
         costumeNumber: String,
@@ -356,6 +411,8 @@ fun SzatniaApp(
     val scope = rememberCoroutineScope()
     var showDatePicker by rememberSaveable { mutableStateOf(false) }
     var addCostumeDialogOpen by rememberSaveable { mutableStateOf(false) }
+    var addMemberDialogOpen by rememberSaveable { mutableStateOf(false) }
+    var memberToEdit by remember { mutableStateOf<ChoirMember?>(null) }
     var borrowDialogState by remember { mutableStateOf<BorrowDialogState?>(null) }
     var costumeToEdit by remember { mutableStateOf<Costume?>(null) }
     var costumeToDelete by remember { mutableStateOf<Costume?>(null) }
@@ -397,6 +454,10 @@ fun SzatniaApp(
         floatingActionButton = {
             if (coordinator.screen == Screen.CostumeCategories) {
                 FloatingActionButton(onClick = { addCostumeDialogOpen = true }) {
+                    Text("+")
+                }
+            } else if (coordinator.screen == Screen.Members) {
+                FloatingActionButton(onClick = { addMemberDialogOpen = true }) {
                     Text("+")
                 }
             }
@@ -468,11 +529,39 @@ fun SzatniaApp(
                             onBorrowNewClick = {
                                 borrowDialogState = BorrowDialogState(presetRegistryNumber = member.registryNumber)
                             },
+                            onEditClick = { memberToEdit = member },
                         )
                     }
                 }
             }
         }
+    }
+
+    if (addMemberDialogOpen) {
+        AddChoirMemberDialog(
+            onDismiss = { addMemberDialogOpen = false },
+            onConfirm = { member ->
+                scope.launch {
+                    val result = coordinator.addChoirMemberAndSync(member)
+                    result.showIn(snackbars, this)
+                    if (result.isSuccess) addMemberDialogOpen = false
+                }
+            },
+        )
+    }
+
+    memberToEdit?.let { member ->
+        AddChoirMemberDialog(
+            initialMember = member,
+            onDismiss = { memberToEdit = null },
+            onConfirm = { updatedMember ->
+                scope.launch {
+                    val result = coordinator.updateChoirMemberAndSync(member.registryNumber, updatedMember)
+                    result.showIn(snackbars, this)
+                    if (result.isSuccess) memberToEdit = null
+                }
+            },
+        )
     }
 
     if (showDatePicker) {
@@ -981,6 +1070,7 @@ private fun MemberProfileScreen(
     snapshot: ChoirSnapshot,
     onReturnClick: (Costume) -> Unit,
     onBorrowNewClick: () -> Unit,
+    onEditClick: () -> Unit,
 ) {
     val currentCostumes = remember(snapshot, member.registryNumber) {
         snapshot.costumes
@@ -1024,6 +1114,12 @@ private fun MemberProfileScreen(
                         onClick = onBorrowNewClick,
                     ) {
                         Text("WYPOŻYCZ NOWY")
+                    }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onEditClick,
+                    ) {
+                        Text("EDYTUJ PROFIL")
                     }
                 }
             }
@@ -1169,6 +1265,76 @@ private fun SessionDateDialog(
     ) {
         DatePicker(state = datePickerState)
     }
+}
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+private fun AddChoirMemberDialog(
+    initialMember: ChoirMember? = null,
+    onDismiss: () -> Unit,
+    onConfirm: (ChoirMember) -> Unit,
+) {
+    var fullName by rememberSaveable(initialMember?.registryNumber) { mutableStateOf(initialMember?.fullName.orEmpty()) }
+    var registryNumber by rememberSaveable(initialMember?.registryNumber) { mutableStateOf(initialMember?.registryNumber.orEmpty()) }
+    var phone by rememberSaveable(initialMember?.registryNumber) { mutableStateOf(initialMember?.phone.orEmpty()) }
+    var email by rememberSaveable(initialMember?.registryNumber) { mutableStateOf(initialMember?.email.orEmpty()) }
+    var size by rememberSaveable(initialMember?.registryNumber) { mutableStateOf(initialMember?.size.orEmpty()) }
+    var voicePart by remember(initialMember?.registryNumber) { mutableStateOf(initialMember?.voicePart) }
+    var status by remember(initialMember?.registryNumber) { mutableStateOf(initialMember?.status ?: MemberStatus.ACTIVE) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initialMember == null) "Dodaj chórzystę" else "Edytuj profil") },
+        text = {
+            Column(
+                modifier = Modifier.height(520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(fullName, { fullName = it }, Modifier.fillMaxWidth(), label = { Text("Imię i nazwisko *") }, singleLine = true)
+                OutlinedTextField(registryNumber, { registryNumber = it }, Modifier.fillMaxWidth(), label = { Text("Numer ewidencyjny *") }, singleLine = true, enabled = initialMember == null)
+                OutlinedTextField(phone, { phone = it }, Modifier.fillMaxWidth(), label = { Text("Telefon") }, singleLine = true)
+                OutlinedTextField(email, { email = it }, Modifier.fillMaxWidth(), label = { Text("E-mail") }, singleLine = true)
+                OutlinedTextField(size, { size = it }, Modifier.fillMaxWidth(), label = { Text("Rozmiar") }, singleLine = true)
+                Text("Głos", style = MaterialTheme.typography.labelLarge)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    VoicePart.entries.forEach { voice ->
+                        FilterChip(
+                            selected = voicePart == voice,
+                            onClick = { voicePart = if (voicePart == voice) null else voice },
+                            label = { Text(voice.label, softWrap = false) },
+                        )
+                    }
+                }
+                Text("Status", style = MaterialTheme.typography.labelLarge)
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    MemberStatus.entries.forEach { memberStatus ->
+                        FilterChip(
+                            selected = status == memberStatus,
+                            onClick = { status = memberStatus },
+                            label = { Text(memberStatus.label, softWrap = false) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = fullName.isNotBlank() && registryNumber.isNotBlank(),
+                onClick = {
+                    onConfirm(ChoirMember(fullName, registryNumber, phone, email, size, voicePart, status))
+                },
+            ) { Text(if (initialMember == null) "Dodaj" else "Zapisz") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Anuluj") } },
+    )
 }
 
 @Composable
