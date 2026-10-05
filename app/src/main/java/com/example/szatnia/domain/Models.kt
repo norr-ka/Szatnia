@@ -92,6 +92,7 @@ data class RentalHistoryEntry(
     val registryNumber: String,
     val fullName: String,
     val deposit: Double? = null,
+    val depositPaid: Boolean = true,
 ) {
     val isOpen: Boolean
         get() = returnedAt == null

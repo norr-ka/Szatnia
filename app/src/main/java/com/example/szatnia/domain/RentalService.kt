@@ -13,6 +13,7 @@ class RentalService(
         costumeId: String,
         registryNumber: String,
         deposit: Double?,
+        depositPaid: Boolean = true,
     ): Result<Unit> {
         val snapshot = repository.snapshot()
         val costume = snapshot.costumes.firstOrNull { it.costumeId == costumeId }
@@ -25,7 +26,7 @@ class RentalService(
                 IllegalStateException("Strój ${costume.costumeNumber} jest już wypożyczony")
             )
         }
-        if (costume.category.requiresDeposit && deposit == null) {
+        if (costume.category.requiresDeposit && depositPaid && deposit == null) {
             return Result.failure(IllegalArgumentException("Kaucja jest wymagana dla teczek koncertowych"))
         }
 
@@ -45,7 +46,8 @@ class RentalService(
                 costumeNumber = costume.costumeNumber,
                 registryNumber = member.registryNumber,
                 fullName = member.fullName,
-                deposit = deposit?.takeIf { costume.category.requiresDeposit },
+                deposit = deposit?.takeIf { costume.category.requiresDeposit && depositPaid },
+                depositPaid = !costume.category.requiresDeposit || depositPaid,
             )
         )
         return Result.success(Unit)

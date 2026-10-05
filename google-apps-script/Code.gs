@@ -31,7 +31,8 @@ const SHEETS = {
       'Numer stroju',
       'Nr ewidencyjny osoby',
       'Imię i nazwisko',
-      'Kaucja'
+      'Kaucja',
+      'Kaucja_wplacona'
     ]
   }
 };

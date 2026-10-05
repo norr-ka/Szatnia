@@ -1,4 +1,4 @@
-﻿package com.example.szatnia.ui
+package com.example.szatnia.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,6 +28,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -145,12 +147,18 @@ class SzatniaCoordinator(
         }
     }
 
-    fun borrowCostume(costumeId: String, registryNumber: String, deposit: Double?): Result<Unit> {
+    fun borrowCostume(
+        costumeId: String,
+        registryNumber: String,
+        deposit: Double?,
+        depositPaid: Boolean = true,
+    ): Result<Unit> {
         return rentalService.borrowCostume(
             operationDate = sessionDate,
             costumeId = costumeId,
             registryNumber = registryNumber,
             deposit = deposit,
+            depositPaid = depositPaid,
         ).also { refresh() }
     }
 
@@ -276,9 +284,10 @@ class SzatniaCoordinator(
         costumeId: String,
         registryNumber: String,
         deposit: Double?,
+        depositPaid: Boolean,
     ): Result<String> {
         return runCatching {
-            borrowCostume(costumeId, registryNumber, deposit).getOrThrow()
+            borrowCostume(costumeId, registryNumber, deposit, depositPaid).getOrThrow()
             pushIfConfiguredOrMarkPending()
             if (hasPendingSync) "Zapisano wypożyczenie lokalnie. Sync online oczekuje."
             else "Zapisano wypożyczenie"
@@ -291,6 +300,20 @@ class SzatniaCoordinator(
             pushIfConfiguredOrMarkPending()
             if (hasPendingSync) "Zapisano zwrot lokalnie. Sync online oczekuje."
             else "Zapisano zwrot"
+        }
+    }
+
+    suspend fun markDepositPaidAndSync(operationId: String): Result<String> {
+        return runCatching {
+            val entry = snapshot.historyEntries.firstOrNull { it.operationId == operationId }
+                ?: throw IllegalArgumentException("Nie znaleziono wpisu wypożyczenia")
+            if (!entry.depositPaid) {
+                repository.upsertHistoryEntry(entry.copy(depositPaid = true))
+                refresh()
+                pushIfConfiguredOrMarkPending()
+            }
+            if (hasPendingSync) "Oznaczono wpłatę kaucji lokalnie. Sync online oczekuje."
+            else "Oznaczono kaucję jako wpłaconą"
         }
     }
 
@@ -417,6 +440,10 @@ fun SzatniaApp(
     var costumeToEdit by remember { mutableStateOf<Costume?>(null) }
     var costumeToDelete by remember { mutableStateOf<Costume?>(null) }
 
+    BackHandler(enabled = coordinator.screen != Screen.Home) {
+        coordinator.goBack()
+    }
+
     LaunchedEffect(Unit) {
         coordinator.trySyncPendingChanges()
         while (true) {
@@ -530,6 +557,18 @@ fun SzatniaApp(
                                 borrowDialogState = BorrowDialogState(presetRegistryNumber = member.registryNumber)
                             },
                             onEditClick = { memberToEdit = member },
+                            onBorrowAgainClick = { entry ->
+                                borrowDialogState = BorrowDialogState(
+                                    presetCostumeId = entry.costumeId,
+                                    presetRegistryNumber = member.registryNumber,
+                                )
+                            },
+                            onMarkDepositPaidClick = { entry ->
+                                scope.launch {
+                                    coordinator.markDepositPaidAndSync(entry.operationId)
+                                        .showIn(snackbars, this)
+                                }
+                            },
                         )
                     }
                 }
@@ -619,9 +658,9 @@ fun SzatniaApp(
             snapshot = snapshot,
             state = dialogState,
             onDismiss = { borrowDialogState = null },
-            onConfirm = { costumeId, registryNumber, deposit ->
+            onConfirm = { costumeId, registryNumber, deposit, depositPaid ->
                 scope.launch {
-                    coordinator.borrowCostumeAndSync(costumeId, registryNumber, deposit)
+                    coordinator.borrowCostumeAndSync(costumeId, registryNumber, deposit, depositPaid)
                         .showIn(snackbars, this)
                     borrowDialogState = null
                 }
@@ -1071,6 +1110,8 @@ private fun MemberProfileScreen(
     onReturnClick: (Costume) -> Unit,
     onBorrowNewClick: () -> Unit,
     onEditClick: () -> Unit,
+    onBorrowAgainClick: (RentalHistoryEntry) -> Unit,
+    onMarkDepositPaidClick: (RentalHistoryEntry) -> Unit,
 ) {
     val currentCostumes = remember(snapshot, member.registryNumber) {
         snapshot.costumes
@@ -1154,6 +1195,29 @@ private fun MemberProfileScreen(
                             text = "Rozmiar: ${costume.size ?: "brak"}",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        snapshot.historyEntries.lastOrNull {
+                            it.costumeId == costume.costumeId && it.returnedAt == null
+                        }?.takeIf { it.category.requiresDeposit }?.let { rentalEntry ->
+                            if (rentalEntry.depositPaid) {
+                                Text(
+                                    "Kaucja wpłacona",
+                                    color = Color(0xFF2E7D32),
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            } else {
+                                Text(
+                                    "Brak kaucji",
+                                    color = Color(0xFFB00020),
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Button(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = { onMarkDepositPaidClick(rentalEntry) },
+                                ) {
+                                    Text("Oznacz kaucję jako wpłaconą")
+                                }
+                            }
+                        }
                         Button(
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onReturnClick(costume) },
@@ -1184,6 +1248,15 @@ private fun MemberProfileScreen(
             }
         } else {
             items(memberHistory) { entry ->
+                val costume = snapshot.costumes.firstOrNull { it.costumeId == entry.costumeId }
+                val isAvailable = costume?.availability == CostumeAvailability.AVAILABLE
+                val unavailableReason = when {
+                    costume == null -> "Tego stroju nie ma już w magazynie."
+                    isAvailable -> null
+                    costume.currentBorrowerRegistryNumber == member.registryNumber ->
+                        "Strój jest już wypożyczony przez tę osobę."
+                    else -> "Wypożyczone przez: ${costume.borrowerDisplayName(snapshot.choirMembers) ?: "nieznaną osobę"}"
+                }
                 Card {
                     Column(
                         modifier = Modifier.padding(18.dp),
@@ -1212,6 +1285,20 @@ private fun MemberProfileScreen(
                             Text(
                                 text = "Kaucja: $deposit",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = isAvailable,
+                            onClick = { onBorrowAgainClick(entry) },
+                        ) {
+                            Text("Wypożycz ponownie")
+                        }
+                        unavailableReason?.let { reason ->
+                            Text(
+                                text = reason,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
                             )
                         }
                     }
@@ -1466,7 +1553,7 @@ private fun BorrowCostumeDialog(
     snapshot: ChoirSnapshot,
     state: BorrowDialogState,
     onDismiss: () -> Unit,
-    onConfirm: (String, String, Double?) -> Unit,
+    onConfirm: (String, String, Double?, Boolean) -> Unit,
 ) {
     var memberQuery by rememberSaveable { mutableStateOf("") }
     var costumeQuery by rememberSaveable { mutableStateOf("") }
@@ -1478,6 +1565,7 @@ private fun BorrowCostumeDialog(
         mutableStateOf(state.presetCostumeId)
     }
     var depositInput by rememberSaveable { mutableStateOf("") }
+    var depositPaid by rememberSaveable { mutableStateOf(true) }
 
     val availableCostumes = remember(snapshot) {
         snapshot.costumes
@@ -1512,7 +1600,7 @@ private fun BorrowCostumeDialog(
     val requiresDeposit = selectedCostume?.category?.requiresDeposit == true
     val isConfirmEnabled = selectedCostumeId != null &&
         selectedRegistryNumber != null &&
-        (!requiresDeposit || depositInput.replace(',', '.').toDoubleOrNull() != null)
+        (!requiresDeposit || !depositPaid || depositInput.replace(',', '.').toDoubleOrNull() != null)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1588,13 +1676,19 @@ private fun BorrowCostumeDialog(
                 }
 
                 if (requiresDeposit) {
-                    OutlinedTextField(
-                        value = depositInput,
-                        onValueChange = { depositInput = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Kaucja") },
-                        singleLine = true,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = !depositPaid, onCheckedChange = { depositPaid = !it })
+                        Text("Brak kaucji", color = if (!depositPaid) Color(0xFFB00020) else MaterialTheme.colorScheme.onSurface)
+                    }
+                    if (depositPaid) {
+                        OutlinedTextField(
+                            value = depositInput,
+                            onValueChange = { depositInput = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Wpłacona kaucja") },
+                            singleLine = true,
+                        )
+                    }
                 }
             }
         },
@@ -1605,7 +1699,8 @@ private fun BorrowCostumeDialog(
                     onConfirm(
                         selectedCostumeId.orEmpty(),
                         selectedRegistryNumber.orEmpty(),
-                        depositInput.replace(',', '.').toDoubleOrNull(),
+                        if (depositPaid) depositInput.replace(',', '.').toDoubleOrNull() else null,
+                        depositPaid,
                     )
                 },
             ) {

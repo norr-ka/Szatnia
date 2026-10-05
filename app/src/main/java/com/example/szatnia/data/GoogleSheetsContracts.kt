@@ -44,6 +44,7 @@ object GoogleSheetsSchema {
         const val registryNumber = "Nr ewidencyjny osoby"
         const val fullName = "Imię i nazwisko"
         const val deposit = "Kaucja"
+        const val depositPaid = "Kaucja_wplacona"
     }
 }
 
@@ -107,6 +108,7 @@ class GoogleSheetsSnapshotMapper {
             GoogleSheetsSchema.HistorySheet.registryNumber to entry.registryNumber,
             GoogleSheetsSchema.HistorySheet.fullName to entry.fullName,
             GoogleSheetsSchema.HistorySheet.deposit to entry.deposit?.toString(),
+            GoogleSheetsSchema.HistorySheet.depositPaid to entry.depositPaid.toString(),
         )
     }
 
@@ -160,6 +162,8 @@ class GoogleSheetsSnapshotMapper {
             deposit = row[GoogleSheetsSchema.HistorySheet.deposit].cleanValue()
                 ?.replace(',', '.')
                 ?.toDoubleOrNull(),
+            depositPaid = row[GoogleSheetsSchema.HistorySheet.depositPaid].cleanValue()
+                ?.toBooleanStrictOrNull() ?: true,
         )
     }
 
